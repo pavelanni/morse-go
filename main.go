@@ -29,6 +29,16 @@ var morseCodeMap = map[rune]string{
 	'/': "-..-.", '?': "..--..", '.': ".-.-.-", ',': "--..--",
 }
 
+// Pre-generated audio samples for each character
+type morseAudio struct {
+	dotSamples  []int16
+	dashSamples []int16
+	elementGap  []int16
+	charGap     []int16
+	wordGap     []int16
+	charSamples map[rune][]int16
+}
+
 // calculateMorseTiming calculates timing from WPM using PARIS standard
 func calculateMorseTiming(wpm int) (dotDuration, dashDuration, elementGap, charGap, wordGap int) {
 	if wpm <= 0 {
@@ -47,8 +57,8 @@ func calculateMorseTiming(wpm int) (dotDuration, dashDuration, elementGap, charG
 	return
 }
 
-// generateMorseAudio generates audio for a given text in Morse code
-func generateMorseAudio(text string, wpm int, freq int) ([]int16, int) {
+// newMorseAudio creates a new morseAudio instance with pre-generated samples
+func newMorseAudio(wpm int, freq int) *morseAudio {
 	dotDuration, dashDuration, elementGap, charGap, wordGap := calculateMorseTiming(wpm)
 
 	// Convert durations from milliseconds to samples
@@ -58,27 +68,64 @@ func generateMorseAudio(text string, wpm int, freq int) ([]int16, int) {
 	charGapSamples := int(float64(charGap) * sampleRate / 1000)
 	wordGapSamples := int(float64(wordGap) * sampleRate / 1000)
 
+	// Generate basic elements
+	dot := make([]int16, dotSamples)
+	dash := make([]int16, dashSamples)
+	elementGapAudio := make([]int16, elementGapSamples)
+	charGapAudio := make([]int16, charGapSamples)
+	wordGapAudio := make([]int16, wordGapSamples)
+
+	// Generate tone for dot and dash
+	for i := 0; i < dotSamples; i++ {
+		dot[i] = int16(math.Sin(2*math.Pi*float64(freq)*float64(i)/float64(sampleRate)) * 32767)
+	}
+	for i := 0; i < dashSamples; i++ {
+		dash[i] = int16(math.Sin(2*math.Pi*float64(freq)*float64(i)/float64(sampleRate)) * 32767)
+	}
+
+	// Pre-generate samples for each character
+	charSamples := make(map[rune][]int16)
+	for char, morse := range morseCodeMap {
+		var samples []int16
+		for i, element := range morse {
+			if element == '.' {
+				samples = append(samples, dot...)
+			} else if element == '-' {
+				samples = append(samples, dash...)
+			}
+			if i < len(morse)-1 {
+				samples = append(samples, elementGapAudio...)
+			}
+		}
+		charSamples[char] = samples
+	}
+
+	return &morseAudio{
+		dotSamples:  dot,
+		dashSamples: dash,
+		elementGap:  elementGapAudio,
+		charGap:     charGapAudio,
+		wordGap:     wordGapAudio,
+		charSamples: charSamples,
+	}
+}
+
+// generateMorseAudio generates audio for a given text in Morse code
+func generateMorseAudio(text string, wpm int, freq int) ([]int16, int) {
+	morse := newMorseAudio(wpm, freq)
+
 	// Calculate total duration needed
 	totalSamples := 0
 	for i, char := range strings.ToUpper(text) {
 		if char == ' ' {
-			totalSamples += wordGapSamples
+			totalSamples += len(morse.wordGap)
 			continue
 		}
 
-		if morse, ok := morseCodeMap[char]; ok {
-			for j, element := range morse {
-				if element == '.' {
-					totalSamples += dotSamples
-				} else if element == '-' {
-					totalSamples += dashSamples
-				}
-				if j < len(morse)-1 {
-					totalSamples += elementGapSamples
-				}
-			}
+		if samples, ok := morse.charSamples[char]; ok {
+			totalSamples += len(samples)
 			if i < len(text)-1 && text[i+1] != ' ' {
-				totalSamples += charGapSamples
+				totalSamples += len(morse.charGap)
 			}
 		}
 	}
@@ -89,34 +136,19 @@ func generateMorseAudio(text string, wpm int, freq int) ([]int16, int) {
 
 	for i, char := range strings.ToUpper(text) {
 		if char == ' ' {
-			currentSample += wordGapSamples
+			copy(samples[currentSample:], morse.wordGap)
+			currentSample += len(morse.wordGap)
 			continue
 		}
 
-		if morse, ok := morseCodeMap[char]; ok {
-			for j, element := range morse {
-				duration := dotSamples
-				if element == '-' {
-					duration = dashSamples
-				}
-
-				// Generate tone for the element
-				for k := 0; k < duration; k++ {
-					if currentSample+k < len(samples) {
-						samples[currentSample+k] = int16(math.Sin(2*math.Pi*float64(freq)*float64(k)/float64(sampleRate)) * 32767)
-					}
-				}
-				currentSample += duration
-
-				// Add element gap if not the last element
-				if j < len(morse)-1 {
-					currentSample += elementGapSamples
-				}
-			}
+		if charSamples, ok := morse.charSamples[char]; ok {
+			copy(samples[currentSample:], charSamples)
+			currentSample += len(charSamples)
 
 			// Add character gap if not the last character
 			if i < len(text)-1 && text[i+1] != ' ' {
-				currentSample += charGapSamples
+				copy(samples[currentSample:], morse.charGap)
+				currentSample += len(morse.charGap)
 			}
 		}
 	}
